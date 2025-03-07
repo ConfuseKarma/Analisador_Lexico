@@ -2,9 +2,18 @@ package analisador_lexico;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Stack;
 
-import scala.collection.concurrent.Map;
-import scala.collection.mutable.HashMap;
+/**
+ * Analisador léxico principal. Responsável por:
+ * - Varrer o código fonte caractere por caractere
+ * - Identificar tokens usando regras léxicas
+ * - Gerenciar estados (comentários, strings, etc)
+ * - Gerar lista de tokens para o parser
+ * - Reportar erros léxicos com localização
+ */
 
 public class Lexer {
     private final String source;
@@ -13,9 +22,23 @@ public class Lexer {
     private int current = 0;
     private int line = 1;
     private int column = 1;
+    
+    private enum State { DEFAULT, STRING, BLOCK_COMMENT }
+    private Stack<State> states = new Stack<>();
+
+    private static final Map<String, Token.TokenType> keywords = new HashMap<>();
+    static {
+        keywords.put("if", Token.TokenType.IF);
+        keywords.put("else", Token.TokenType.ELSE);
+        keywords.put("while", Token.TokenType.WHILE);
+        keywords.put("for", Token.TokenType.FOR);
+        keywords.put("fun", Token.TokenType.FUN);
+        keywords.put("return", Token.TokenType.RETURN);
+    }
 
     public Lexer(String source) {
         this.source = source;
+        this.states.push(State.DEFAULT);
     }
 
     public List<Token> scanTokens() {
@@ -28,6 +51,14 @@ public class Lexer {
     }
 
     private void scanToken() {
+        if (states.peek() == State.BLOCK_COMMENT) {
+            handleBlockComment();
+            return;
+        } else if (states.peek() == State.STRING) {
+            handleString();
+            return;
+        }
+
         char c = advance();
         switch (c) {
             // Delimitadores
@@ -44,16 +75,28 @@ public class Lexer {
             case '*': addToken(Token.TokenType.MULT); break;
             case '/': handleSlash(); break;
             case '=': handleEqual(); break;
+            case '!': handleNotEqual(); break;
+            case '<': handleLess(); break;
+            case '>': handleGreater(); break;
             
-            // Ignorar whitespace
-            case ' ':
-            case '\r':
-            case '\t':
+            // Strings
+            case '"': 
+                states.push(State.STRING);
+                start = current; // Ignora a aspa inicial
                 break;
 
+            // Controle de linha/coluna
             case '\n':
                 line++;
                 column = 1;
+                break;
+                
+            case ' ':
+            case '\r':
+                break;
+                
+            case '\t':
+                column += 3; // Tabs como 4 espaços
                 break;
 
             default:
@@ -68,50 +111,77 @@ public class Lexer {
         }
     }
 
+    private void handleBlockComment() {
+        while (!isAtEnd()) {
+            if (peek() == '*' && peekNext() == '/') {
+                advance(); // Consome *
+                advance(); // Consome /
+                states.pop();
+                return;
+            }
+            advance();
+        }
+        error("Comentário de bloco não fechado");
+    }
+
+    private void handleString() {
+        while (peek() != '"' && !isAtEnd()) {
+            if (peek() == '\\') handleEscape();
+            advance();
+        }
+        
+        if (isAtEnd()) {
+            error("String não fechada");
+            return;
+        }
+        
+        advance(); // Fecha as aspas
+        addToken(Token.TokenType.STRING_LITERAL);
+        states.pop();
+    }
+
+    private void handleEscape() {
+        advance(); // Consome a \
+        char c = peek();
+        switch (c) {
+            case 'n': case 't': case 'r': case '"': case '\\':
+                advance();
+                break;
+            default:
+                error("Sequência de escape inválida: \\" + c);
+        }
+    }
+
     private void handleSlash() {
         if (match('/')) {
             // Comentário de linha
             while (peek() != '\n' && !isAtEnd()) advance();
         } else if (match('*')) {
-            // Comentário de bloco
-            blockComment();
+            states.push(State.BLOCK_COMMENT);
         } else {
             addToken(Token.TokenType.DIV);
         }
     }
 
-    private void blockComment() {
-        int depth = 1;
-        while (depth > 0 && !isAtEnd()) {
-            if (peek() == '/' && peekNext() == '*') {
-                advance();
-                advance();
-                depth++;
-            } else if (peek() == '*' && peekNext() == '/') {
-                advance();
-                advance();
-                depth--;
-            } else {
-                advance();
-            }
-        }
-        if (depth > 0) {
-            error("Comentário de bloco não fechado");
-        }
+    private void handleEqual() {
+        addToken(match('=') ? Token.TokenType.EQEQ : Token.TokenType.EQ);
     }
 
-    private void handleEqual() {
-        if (match('=')) {
-            addToken(Token.TokenType.EQEQ);
-        } else {
-            addToken(Token.TokenType.EQ);
-        }
+    private void handleNotEqual() {
+        addToken(match('=') ? Token.TokenType.NEQ : Token.TokenType.ERROR);
+    }
+
+    private void handleLess() {
+        addToken(match('=') ? Token.TokenType.LTE : Token.TokenType.LT);
+    }
+
+    private void handleGreater() {
+        addToken(match('=') ? Token.TokenType.GTE : Token.TokenType.GT);
     }
 
     private void number() {
         while (Character.isDigit(peek())) advance();
 
-        // Verificar parte fracionária
         if (peek() == '.' && Character.isDigit(peekNext())) {
             advance();
             while (Character.isDigit(peek())) advance();
@@ -128,21 +198,12 @@ public class Lexer {
         addToken(type);
     }
 
-    private static final Map<String, Token.TokenType> keywords = new HashMap<>();
-    static {
-        keywords.put("if", Token.TokenType.IF);
-        keywords.put("else", Token.TokenType.ELSE);
-        keywords.put("while", Token.TokenType.WHILE);
-        keywords.put("for", Token.TokenType.FOR);
-        keywords.put("fun", Token.TokenType.FUN);
-        keywords.put("return", Token.TokenType.RETURN);
-    }
-
     // Métodos auxiliares
     private char advance() {
-        current++;
+        if (isAtEnd()) return '\0';
+        char c = source.charAt(current++);
         column++;
-        return source.charAt(current - 1);
+        return c;
     }
 
     private boolean match(char expected) {
@@ -158,7 +219,7 @@ public class Lexer {
     }
 
     private char peekNext() {
-        return current + 1 >= source.length() ? '\0' : source.charAt(current + 1);
+        return (current + 1 >= source.length()) ? '\0' : source.charAt(current + 1);
     }
 
     private boolean isAtEnd() {
@@ -167,12 +228,14 @@ public class Lexer {
 
     private void addToken(Token.TokenType type) {
         String text = source.substring(start, current);
-        tokens.add(new Token(type, text, line, column - (current - start)));
+        int tokenColumn = column - (current - start);
+        tokens.add(new Token(type, text, line, tokenColumn));
     }
 
     private void error(String message) {
         String text = source.substring(start, current);
-        tokens.add(new Token(Token.TokenType.ERROR, text, line, column - (current - start)));
-        System.err.println("Erro léxico na linha " + line + ", coluna " + (column - (current - start)) + ": " + message);
+        int errorColumn = column - (current - start);
+        tokens.add(new Token(Token.TokenType.ERROR, text, line, errorColumn));
+        System.err.println("Erro léxico [Linha " + line + ", Coluna " + errorColumn + "]: " + message);
     }
 }
